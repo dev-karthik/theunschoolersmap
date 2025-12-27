@@ -1,0 +1,265 @@
+{% extends "templates/web.html" %}
+{% block title %}{{ _("Unschooler Map Repository") }}{% endblock %}
+
+{% block head_include %}
+<link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
+<style>
+  #map { height: 70vh; width: 100%; margin-bottom: 1rem; z-index: 1; }
+  .filter-panel { 
+    background: white; 
+    padding: 1.5rem; 
+    border-radius: 12px; 
+    box-shadow: 0 4px 20px rgba(0,0,0,0.1); 
+    margin-bottom: 1rem; 
+    backdrop-filter: blur(10px);
+  }
+  .marker-title { font-weight: 600; font-size: 16px; margin-bottom: 0.5rem; }
+  .marker-category { 
+    background: #28a745; color: white; 
+    padding: 0.25rem 0.75rem; 
+    border-radius: 20px; 
+    font-size: 12px; 
+    font-weight: 500;
+  }
+  .loading { text-align: center; padding: 3rem; }
+  .stats-badge { font-size: 1rem; }
+
+  /* Airbnb-style Custom Marker Logic */
+    .custom-marker {
+        position: relative;
+        transition: transform 0.2s;
+    }
+    .custom-marker:hover {
+        transform: scale(1.1);
+        z-index: 1000 !important;
+    }
+    
+    /* The Photo Bubble */
+    .marker-photo {
+        width: 50px;
+        height: 50px;
+        border-radius: 50%;
+        background-size: cover;
+        background-position: center;
+        border: 3px solid white;
+        box-shadow: 0 2px 8px rgba(0,0,0,0.4);
+    }
+
+    /* The tiny triangle at the bottom of the bubble */
+    .marker-arrow {
+        width: 0; 
+        height: 0; 
+        border-left: 6px solid transparent;
+        border-right: 6px solid transparent;
+        border-top: 8px solid white;
+        margin: -2px auto 0; /* positions it below the circle */
+    }
+</style>
+{% endblock %}
+
+{% block page_content %}
+<div class="container-fluid px-4 py-3">
+  <div class="row mb-4">
+    <div class="col">
+      <h1 class="display-5 fw-bold mb-2">{{ _("Unschooler Map - Communities near you") }}</h1>
+      <p class="lead text-muted">{{ _("Discover Nature Spots, Organizations, Communities and Activities near you") }}</p>
+    </div>
+  </div>
+
+  {# Filters #}
+  {% set selected_city = frappe.form_dict.city or "" %}
+  {% set selected_type = frappe.form_dict.type or "Place" %}
+  {% set selected_category = frappe.form_dict.category or "" %}
+  
+  <form id="filterForm" class="filter-panel row g-3 align-items-end">
+    <div class="col-lg-3 col-md-6">
+      <label class="form-label fw-semibold">{{ _("City") }}</label>
+      <select name="city" class="form-select" data-filter>
+        <option value="">{{ _("All Cities") }}</option>
+        {% set cities = frappe.get_all("City", fields=["name", "city_name"], order_by="city_name") %}
+        {% for c in cities %}
+          <option value="{{ c.name }}" {% if c.name == selected_city %}selected{% endif %}>
+            {{ c.city_name }}
+          </option>
+        {% endfor %}
+      </select>
+    </div>
+    
+    <div class="col-lg-2 col-md-6">
+      <label class="form-label fw-semibold">{{ _("Type") }}</label>
+      <select name="type" class="form-select" data-filter>
+        <option value="Place" {% if selected_type == "Place" %}selected{% endif %}>🏞️ Places</option>
+        <option value="Organization" {% if selected_type == "Organization" %}selected{% endif %}>🏢 Organizations</option>
+        <option value="Facilitator" {% if selected_type == "Facilitator" %}selected{% endif %}>👤 Facilitators</option>
+        <option value="Activities" {% if selected_type == "Activities" %}selected{% endif %}>🎉 Activities</option>
+      </select>
+    </div>
+       
+    <div class="col-lg-2 col-md-6">
+      <button type="submit" class="btn btn-primary w-100 py-2">
+        <i class="fa fa-filter"></i> {{ _("Update Map") }}
+      </button>
+    </div>
+    
+    <div class="col-lg-3 col-md-6">
+      <div class="text-lg-end mt-2">
+        <span id="markerCount" class="badge bg-success fs-5 stats-badge px-3 py-2">Loading...</span>
+      </div>
+    </div>
+  </form>
+
+  {# Map Container #}
+  <div id="map" class="rounded-3 overflow-hidden"></div>
+  
+  {# Legend #}
+  <div class="row mt-4">
+    <div class="col-md-8">
+      <h6 class="fw-semibold">{{ _("Legend") }}</h6>
+      <div class="d-flex flex-wrap gap-2">
+        <span class="marker-category" style="background: #28a745">In-city Greens</span>
+        <span class="marker-category" style="background: #17a2b8">Day Trips</span>
+        <span class="marker-category" style="background: #ffc107; color: #000">Weekend Stays</span>
+        <span class="marker-category" style="background: #dc3545">Residencies</span>
+        <br>
+        <span class="marker-category" style="background: #6f42c1">Volunteering</span>
+        <span class="marker-category" style="background: #fd7e14">Trail</span>
+        <span class="marker-category" style="background: #20c997">Citizen Science</span>
+        <span class="marker-category" style="background: #bbc142">Workshop</span>
+      </div>
+    </div>
+  </div>
+</div>
+<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+<script>
+let map, markersLayer;
+
+frappe.ready(() => {
+  initMap();
+  loadMapData();
+  
+  // Filter form handler
+  document.getElementById('filterForm').addEventListener('change', debounce(loadMapData, 300));
+  document.getElementById('filterForm').addEventListener('submit', (e) => {
+    e.preventDefault();
+    loadMapData();
+  });
+});
+
+function initMap() {
+  map = L.map('map').setView([20.5937, 78.9629], 11); // Centered on India
+  
+  L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+    attribution: '© OpenStreetMap contributors',
+    maxZoom: 18
+  }).addTo(map);
+  
+  // Use featureGroup instead of layerGroup
+  markersLayer = L.featureGroup().addTo(map);
+}
+
+async function loadMapData() {
+  const formData = new FormData(document.getElementById('filterForm'));
+  const params = new URLSearchParams(formData).toString();
+  
+  try {
+    document.getElementById('markerCount').textContent = 'Loading...';
+    markersLayer.clearLayers();
+    console.log(params);
+    const response = await fetch(`/api/method/alt_community.api.get_nature_map_data?${params}`);
+    //const response = await fetch(`/api/nature-map-data?${params}`);
+    const data = await response.json();
+    console.log(data);
+    document.getElementById('markerCount').textContent = 
+      `${data.message.total} ${data.message.filters.doctype} found`;
+    
+    addMarkersToMap(data.message.items, data.message.filters.doctype);
+    
+  } catch (error) {
+    console.error('Error loading map data:', error);
+    document.getElementById('markerCount').textContent = 'Error loading data';
+  }
+}
+function addMarkersToMap(items, doctype) {
+  const categoryColors = {
+    'In-city': '#28a745', 'Day Trip': '#17a2b8',
+    'Weekend Stay': '#ffc107', 'Residency': '#dc3545',
+    'Volunteering': '#6f42c1', 'Trail': '#fd7e14',
+    'Citizen Science': '#20c997', 'Workshop': '#bbc142'
+  };
+
+  items.forEach(item => {
+    if (item.lat == null || item.lng == null) return;
+
+    const popupContent = `
+            <div style="max-width: 320px;">
+              <div class="marker-title">${item.title || item.name}</div>
+              <div class="marker-category" 
+                  style="background: ${categoryColors[item.category] || '#6c757d'}; display: inline-block;">
+                ${item.category || doctype}
+              </div>
+              ${item.highlights ? `<p style="margin: 0.75rem 0; font-size: 14px;">${item.highlights}</p>` : ''}
+              ${item.status ? `<span class="text-muted">${item.status || 'Active'}</span><br>` : ''}
+              ${item.role ? `<p style="margin: 0.75rem 0; font-size: 14px;">${item.role}</p>` : ''}
+              <div class="mt-3">
+                <a href="${item.link || item.map_link}" target="_blank" class="btn btn-sm btn-outline-primary me-2">
+                  Quick Info
+                </a>
+                <a href="${item.link_url}" class="btn btn-sm btn-outline-primary me-2">
+                  View Details
+                </a>
+              </div>
+            </div>
+          `;
+    if(doctype === "Facilitator"){
+      if( item.image == null )
+             item.image = "/assets/frappe/images/default-avatar.png"
+      // Create custom HTML for the marker (The Photo)
+      var customIcon = L.divIcon({
+          className: 'custom-marker',
+          html: `
+              <div class="marker-photo" style="background-image: url('${item.image}');"></div>
+              <div class="marker-arrow"></div>
+          `,
+          iconSize: [50, 60], // Width, Height
+          iconAnchor: [25, 60], // Point of the icon which corresponds to marker's location
+          popupAnchor: [0, -60] // Where the popup opens relative to the anchor
+      });
+
+      // Add Marker to Map
+      const marker = L.marker([item.lat, item.lng], {icon: customIcon});
+      marker.bindPopup(popupContent);
+      marker.addTo(markersLayer);
+    } else {
+      const marker = L.circleMarker([item.lat, item.lng], {
+        radius: 10,
+        fillColor: categoryColors[item.category] || '#3388ff',
+        color: '#fff',
+        weight: 3,
+        opacity: 1,
+        fillOpacity: 0.85
+      });
+
+      marker.bindPopup(popupContent, { maxWidth: 350, className: 'nature-popup' });
+      marker.addTo(markersLayer);
+    }
+    
+  });
+
+  if (items.length > 0) {
+    map.fitBounds(markersLayer.getBounds(), { padding: [30, 30], maxZoom: 15 });
+  }
+}
+
+function debounce(func, wait) {
+  let timeout;
+  return function executedFunction(...args) {
+    const later = () => {
+      clearTimeout(timeout);
+      func(...args);
+    };
+    clearTimeout(timeout);
+    timeout = setTimeout(later, wait);
+  };
+}
+</script>
+{% endblock %}

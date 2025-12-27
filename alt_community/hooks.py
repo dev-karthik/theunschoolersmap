@@ -213,3 +213,17 @@ app_license = "MIT"
 # auth_hooks = [
 # 	"alt_community.auth.validate"
 # ]
+
+# in city_nature_repo/hooks.py
+website_route_rules = [
+    {"from_route": "/unschoolers/map", "to_route": "unschoolersmap"},
+    {"from_route": "/api/nature-map-data", "to_route": "/api/method/alt_community.api.get_nature_map_data"}
+]
+
+# Define a custom page route that calls a specific method
+#web_pages = {
+#    "/api/nature-map-data": {
+#        "controller": "alt_community.api.get_nature_map_data",
+#        "methods": ["GET"] # Specify allowed HTTP methods if needed
+#    }
+#}
